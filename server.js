@@ -42,8 +42,10 @@ function parseSingleCSV(csvText) {
   
   if (cols.length >= 3) {
     let pm25Val = parseFloat(cols[2]);
-    if (!isNaN(pm25Val) && (pm25Val < 0 || pm25Val === 99999.9)) { 
-      pm25Val = 0; 
+    
+    // REVISI: Jika nilai minus atau 99999.9, jadikan null (diabaikan) bukan 0
+    if (!isNaN(pm25Val) && (pm25Val < 0 || pm25Val >= 99999)) { 
+      pm25Val = null; 
     }
 
     return {
@@ -181,6 +183,7 @@ app.get("/api/v1/pm25", (req, res) => {
 });
 
 // --- REST API ENDPOINT BARU: Rata-Rata 10 Hari Terakhir ---
+// --- REST API ENDPOINT BARU: Statistik 10 Hari Terakhir (Avg, Min, Max) ---
 app.get("/api/v1/pm25/daily", (req, res) => {
   if (!airQualityState.success && airQualityState.history.length === 0) {
     return res.status(503).json({ error: "Data PM2.5 belum tersedia." });
@@ -191,22 +194,40 @@ app.get("/api/v1/pm25/daily", (req, res) => {
   
   airQualityState.history.forEach(item => {
     if (!dailyGroups[item.dateStr]) {
-      dailyGroups[item.dateStr] = { sum: 0, count: 0 };
+      dailyGroups[item.dateStr] = { 
+        sum: 0, 
+        count: 0,
+        min: Infinity,   // Set awal sangat tinggi
+        max: -Infinity   // Set awal sangat rendah
+      };
     }
-    // Jika ada nilai PM2.5 (tidak null), tambahkan ke total sum
+    
+    // Jika ada nilai PM2.5 (tidak null)
     if (item.pm25 !== null) {
       dailyGroups[item.dateStr].sum += item.pm25;
       dailyGroups[item.dateStr].count += 1;
+      
+      // Update nilai minimum dan maksimum
+      if (item.pm25 < dailyGroups[item.dateStr].min) {
+        dailyGroups[item.dateStr].min = item.pm25;
+      }
+      if (item.pm25 > dailyGroups[item.dateStr].max) {
+        dailyGroups[item.dateStr].max = item.pm25;
+      }
     }
   });
 
-  // 2. Hitung rata-rata per hari
-  const dailyAverages = Object.keys(dailyGroups).map(dateStr => {
+  // 2. Format menjadi Array dan hitung hasil akhir
+  const dailyStats = Object.keys(dailyGroups).map(dateStr => {
     const group = dailyGroups[dateStr];
-    // Cegah pembagian dengan 0
-    const avg = group.count > 0 ? (group.sum / group.count) : 0;
     
-    // Format tanggal menjadi cantik (Contoh: "15 Mei")
+    // Cegah pembagian dengan 0 dan pastikan ada data valid
+    const hasData = group.count > 0;
+    const avg = hasData ? (group.sum / group.count) : 0;
+    const minVal = hasData ? group.min : 0;
+    const maxVal = hasData ? group.max : 0;
+    
+    // Format tanggal menjadi cantik (Contoh: "13 Okt")
     const dateParts = dateStr.split('-');
     let formattedDate = dateStr;
     if (dateParts.length >= 2) {
@@ -217,12 +238,14 @@ app.get("/api/v1/pm25/daily", (req, res) => {
 
     return {
       date: formattedDate,
-      average_pm25: parseFloat(avg.toFixed(2)) // Dibulatkan ke 2 angka desimal
+      average_pm25: parseFloat(avg.toFixed(2)), // Pembulatan 2 desimal
+      min_pm25: minVal,
+      max_pm25: maxVal
     };
   });
 
   // 3. Ambil maksimal 10 hari terakhir
-  const last10Days = dailyAverages.slice(-10);
+  const last10Days = dailyStats.slice(-10);
 
   res.json({
     success: true,
